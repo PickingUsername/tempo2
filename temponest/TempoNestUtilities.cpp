@@ -46,7 +46,8 @@
 #include <limits>
 #include <sstream>
 #include <iomanip>
-#include "/usr/include/gsl/gsl_sf_gamma.h"
+//#include "/usr/include/gsl/gsl_sf_gamma.h"
+#include "gsl/gsl_sf_gamma.h"
 
 void writeCov(std::vector<double> Cube, int &ndim,void *context, std::string longname, int outputoption);
 

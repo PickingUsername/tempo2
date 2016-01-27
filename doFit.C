@@ -54,35 +54,19 @@ double getConstraintDeriv(pulsar *psr,int ipos,int i,int k);
 #ifdef HAVE_BLAS
 void getTempoNestMaxLike(pulsar *pulse, int npsr);
 
-void dgesvd_ftoc(double *in, double **out, int rows, int cols);
-double* dgesvd_ctof(double **in, int rows, int cols);
-void dgesvd(double **A, int m, int n, double *S, double **U, double **VT);
-void dgemv(double **A, double *vecin,double *vecout,int rowa, int cola, char AT);
-double *dgemv_ctof(double **in, int rows, int cols);
-void dgemv_ftoc(double *in, double **out, int rows, int cols);
-void dgemm(double **A, double **B,double **C,int rowa, int cola, int rowb, int colb, char AT, char BT);
-double *dgemm_ctof(double **in, int rows, int cols);
-void dgemm_ftoc(double *in, double **out, int rows, int cols);
-void dpotri(double **A, int msize);
-double *dpotri_ctof(double **in, int rows, int cols);
-void dpotri_ftoc(double *in, double **out, int rows, int cols);
-void dpotrf(double **A, int msize, double &det);
-double *dpotrf_ctof(double **in, int rows, int cols);
-void dpotrf_ftoc(double *in, double **out, int rows, int cols);
+void vector_dgemm(double *A, double *B,double *C,int rowa, int cola, int rowb, int colb, char AT, char BT);
+void vector_dgemv(double *A, double *vecin,double *vecout,int rowa, int cola, char AT);
+void vector_dgesvd(double *A, int M, int N);
+void vector_dpotrf(double *A, int msize, double &det);
+void vector_dpotri(double *A, int msize);
 
 extern "C" void dpotrf_(char *UPLO, int *msize, double *a, int *lda, int *info);
 extern "C" void dpotri_(char *UPLO, int *msize, double *a, int *lda, int *info);
-extern "C" void dgesvd_(char *jobu, char *jobvt, int *m, int *n,
-        double *a, int *lda, double *s, double *u,
-        int *ldu, double *vt, int *ldvt, double *work,
-        int *lwork, int *info);
-extern "C" void dgemv_(char *jobu, int *m, int *n,
-        double *alpha, double *a, int *lda,
-        double *x, int *incx, double *beta, double *y, int *incy);
-extern "C" void dgemm_(char *jobu, char *jobvt, int *m, int *n,
-        int *k, double *alpha, double *a, int *lda,
-        double *b, int *ldb, double *beta, double *c,
-        int *ldc);
+extern "C" void dgesdd_(char *JOBZ, int *M, int *N, double *A, int *LDA, double *S, double *U, int *LDU, double *VT, int *LDVT, double *WORK, int *LWORK, int *IWORK, int *INFO);
+extern "C" void dgemv_(char *jobu, int *m, int *n, double *alpha, double *a, int *lda, double *x, int *incx, double *beta, double *y, int *incy);
+extern "C" void dgemm_(char *jobu, char *jobvt, int *m, int *n,int *k, double *alpha, double *a, int *lda,double *b, int *ldb, double *beta, double *c, int *ldc);
+
+
 #endif
 #endif
 /////////////////End Functions for TempoNest maximum likelihood Fitting/////////////////////
@@ -3195,122 +3179,23 @@ void othpl(int n,double x,double *pl){
 
 void getTempoNestMaxLike(pulsar *pulse, int npsr){
 
-    int subDM=pulse->TNsubtractDM;
-    int subRed=pulse->TNsubtractRed;
+	int debug = 0;
 
-    pulse->TNsubtractDM=0;
-    pulse->TNsubtractRed=0;
+	int subDM=pulse->TNsubtractDM;
+	int subRed=pulse->TNsubtractRed;
 
-
-    formBatsAll(pulse,npsr);       /* Form Barycentric arrival times */
-    formResiduals(pulse,npsr,1);       /* Form residuals */
+	pulse->TNsubtractDM=0;
+	pulse->TNsubtractRed=0;
 
 
-    pulse->TNsubtractDM=subDM;
-    pulse->TNsubtractRed=subRed;
-
-    /////////////////////////////////////////////////////////////////////////////////////////////  
-    /////////////////////////Form the Design Matrix////////////////////////////////////////////
-    //////////////////////////////////////////////////////////////////////////////////////////  
-
-    int numtofit = 1;
-    int numTime=0;
-    int numJumps=0;
-    for(int i=0; i<MAX_PARAMS; i++) {
-        for(int k=0; k<pulse->param[i].aSize; k++) {
-            if(pulse->param[i].fitFlag[k]==1) {
-                if(i!=param_start && i!=param_finish) {
-                    numtofit++;
-                    numTime++;
-                }
-            } // if fitFlag
-        } // for k
-    } // for i
-
-    /* Add extra parameters for jumps */
-    for(int i=1; i<=pulse->nJumps; i++) {
-        if(pulse->fitJump[i]==1){
-            numtofit++;
-            numJumps++;
-        }
-    }
+	formBatsAll(pulse,npsr);       /* Form Barycentric arrival times */
+	formResiduals(pulse,npsr,1);       /* Form residuals */
 
 
-    double **TNDM=new double*[pulse->nobs];
-    for(int i=0;i<pulse->nobs;i++){
-        TNDM[i]=new double[numtofit];
-    }
+	pulse->TNsubtractDM=subDM;
+	pulse->TNsubtractRed=subRed;
 
 
-    double pdParamDeriv[MAX_PARAMS];
-    double *TNDMScale=new double[numtofit];
-    for(int j=0; j<numtofit; j++) {
-        TNDMScale[j]=0;
-    }
-
-    for(int i=0; i < pulse->nobs; i++) {
-        FITfuncs(pulse[0].obsn[i].bat - pulse[0].param[param_pepoch].val[0], pdParamDeriv, numtofit, pulse, i,0);
-        for(int j=0; j<numtofit; j++) {
-            TNDM[i][j]=pdParamDeriv[j];
-            //			printf("PD: %i %i %g \n", i, j, pdParamDeriv[j]);
-            TNDMScale[j]+=TNDM[i][j]*TNDM[i][j];
-        } 
-    } 
-
-
-    for(int j=0; j<numtofit; j++) {
-        TNDMScale[j]=sqrt(TNDMScale[j]);
-    }
-
-
-    for(int i=0; i < pulse->nobs; i++) {
-        for(int j=0; j<numtofit; j++) {
-            TNDM[i][j] = TNDM[i][j]/TNDMScale[j];
-        }
-    }
-
-
-    int useOrthogonal=pulse->useTNOrth;	
-
-
-	double *S;
-	double **U;
-	double **VT;
-	double **V;
-
-	if(useOrthogonal==1){
-
-
-	   S = new double[numtofit];
-	   U = new double*[pulse->nobs];
-	   for(int k=0; k < pulse->nobs; k++){
-	   	U[k] = new double[pulse->nobs];
-	   }
-	   VT = new double*[numtofit]; 
-	   for (int k=0; k<numtofit; k++) VT[k] = new double[numtofit];
-
-	   dgesvd(TNDM,pulse->nobs, numtofit, S, U, VT);
-
-
-	   V=new double*[numtofit];
-
-
-	   for(int i=0;i<numtofit;i++){
-		   V[i]=new double[numtofit];
-	   }
-
-		for(int j=0;j < numtofit;j++){
-			for(int k=0;k < numtofit;k++){
-				V[j][k]=VT[k][j];
-			}
-		}
-
-		for(int j=0;j<pulse->nobs;j++){
-			for(int k=0;k < numtofit;k++){
-				TNDM[j][k]=U[j][k];	
-			}	
-		}
-	}
 
     //////////////////////////////////////////////////////////////////////////////////////////  
     ///////////////////////Noise Hyperparameters//////////////////////////////////////////////
@@ -3342,8 +3227,6 @@ void getTempoNestMaxLike(pulsar *pulse, int npsr){
     double maxtspan=1*(end-start);
     double averageTSamp=2*maxtspan/pulse->nobs;
 
-    double **DMEventInfo;
-
 
     double RedAmp=0;
     double RedIndex=0;
@@ -3353,9 +3236,8 @@ void getTempoNestMaxLike(pulsar *pulse, int npsr){
     double DMIndex=0;
     int FitRedCoeff=0;
     int FitDMCoeff=0;
-    int DMEventCoeff=0;
     int totCoeff=0;
-    int DMEventQuadTerms=0;
+
 
     if(pulse->TNRedAmp != 0 && pulse->TNRedGam != 0){
         RedAmp=pulse->TNRedAmp;
@@ -3384,27 +3266,6 @@ void getTempoNestMaxLike(pulsar *pulse, int npsr){
 
 
         printf("\nIncluding DM Variations with %i Frequencies, %g Log_10 Amplitude, %g Spectral Index\n", FitDMCoeff/2,DMAmp,DMIndex);
-    }
-
-    if(pulse->nDMEvents > 0){
-        DMEventInfo=new double*[pulse->nDMEvents];
-        for(int i=0; i < pulse->nDMEvents; i++){
-
-
-            printf("\nIncluding DM Event %i : %g Start, %g  Length, %g Log_10 Amp, %g Spectral Index\n", i,pulse->TNDMEvStart[i], pulse->TNDMEvLength[i], pulse->TNDMEvAmp[i], pulse->TNDMEvGam[i]);
-
-            DMEventInfo[i]=new double[4];
-            DMEventInfo[i][0]=pulse->TNDMEvStart[i]; //Start time
-            DMEventInfo[i][1]=pulse->TNDMEvLength[i]; //Stop Time
-            DMEventInfo[i][2]=pow(10.0, pulse->TNDMEvAmp[i]); //Amplitude
-            DMEventInfo[i][3]=pulse->TNDMEvGam[i]; //SpectralIndex
-            DMEventCoeff+=2*int(DMEventInfo[i][1]/averageTSamp);
-
-            if(pulse->TNDMEvOff[i]==1){printf(" Including DMEvent offset \n"); DMEventQuadTerms++;}
-            if(pulse->TNDMEvLin[i]==1){printf(" Including DMEvent Linear Term \n");DMEventQuadTerms++;}
-            if(pulse->TNDMEvQuad[i]==1){printf(" Including DMEvent Quadratic Term \n");DMEventQuadTerms++;}
-
-        }
     }
 
 
@@ -3488,13 +3349,8 @@ void getTempoNestMaxLike(pulsar *pulse, int npsr){
     // Total coefficients in F-matrix (include Jitter matrix here if present)
     totCoeff += FitRedCoeff;
     totCoeff += FitDMCoeff;
-    totCoeff += DMEventCoeff;
     totCoeff += nepoch;
 
-    if(pulse->TNBandDMAmp != 0 && pulse->TNBandDMGam != 0){
-        printf("Including Band DM Noise: Amp %g   Index %g \n", pulse->TNBandDMAmp, pulse->TNBandDMGam);
-        totCoeff += 6*pulse->TNBandDMC;
-    }
 
     for(int i =0; i < pulse->nTNBandNoise; i++){
         printf("Including Band Noise between %g and %g MHz: Amp %g   Index %g \n", pulse->TNBandNoiseLF[i], pulse->TNBandNoiseHF[i], pulse->TNBandNoiseAmp[i], pulse->TNBandNoiseGam[i]);
@@ -3507,152 +3363,7 @@ void getTempoNestMaxLike(pulsar *pulse, int npsr){
     }
 
     printf("\nTotal number of coefficients: %d\n",totCoeff);
-
-    double **FMatrix=new double*[pulse->nobs];
-    for(int i=0;i<pulse->nobs;i++){
-        FMatrix[i]=new double[totCoeff];
-        for(int j=0;j<totCoeff;j++){
-            FMatrix[i][j] = 0;
-        }
-    }
-
-
-    double *freqs = new double[totCoeff];
-
-    double *DMVec=new double[pulse->nobs];
-    double DMKappa = 2.410*pow(10.0,-16);
-    int startpos=0;
-    double freqdet=0;
-
-    double *powercoeff=new double[totCoeff];
-    for(int o=0;o<totCoeff; o++){
-        powercoeff[o]=0;
-    }
-
-    double f1yr = 1.0/3.16e7;
-
-
-    //////////////////////////////////////////////////////////////////////////////////////////  
-    ///////////////////////Red Noise///////////////////////////////////////////////////////////
-    //////////////////////////////////////////////////////////////////////////////////////////
-
-    RedAmp=pow(10.0, RedAmp);
-
-    for (int i=0; i<FitRedCoeff/2; i++){
-
-        freqs[startpos+i]=RedFLow*((double)(i+1.0))/(maxtspan);
-        freqs[startpos+i+FitRedCoeff/2]=freqs[startpos+i];
-
-        double rho = pow((1+(pow((1.0/365.25)/RedCorner,RedIndex/2))),2)*(RedAmp*RedAmp/12.0/(M_PI*M_PI))/pow((1+(pow(freqs[i]/RedCorner,RedIndex/2))),2)/(maxtspan*24*60*60)*pow(f1yr,-3.0);
-        powercoeff[i]+= rho;
-        powercoeff[i+FitRedCoeff/2]+= rho;
-        //printf("T2 RedC: %i %g %g %g %g %g \n", i, rho, RedAmp, RedIndex, freqs[i], maxtspan);
-    }
-
-
-    for(int i=0;i<FitRedCoeff/2;i++){
-        for(int k=0;k<pulse->nobs;k++){
-            double time=(double)pulse->obsn[k].bat;
-            FMatrix[k][i]=cos(2*M_PI*freqs[i]*time);
-
-        }
-    }
-
-    for(int i=0;i<FitRedCoeff/2;i++){
-        for(int k=0;k<pulse->nobs;k++){
-            double time=(double)pulse->obsn[k].bat;
-            FMatrix[k][i+FitRedCoeff/2]=sin(2*M_PI*freqs[i]*time);
-        }
-    }
-
-
-    //////////////////////////////////////////////////////////////////////////////////////////  
-    ///////////////////////DM Variations//////////////////////////////////////////////////////
-    //////////////////////////////////////////////////////////////////////////////////////////
-
-
-    startpos=FitRedCoeff;
-    DMAmp=pow(10.0, DMAmp);
-
-    for (int i=0; i<FitDMCoeff/2; i++){
-
-        freqs[startpos+i]=((double)(i+1.0))/maxtspan;
-        freqs[startpos+i+FitDMCoeff/2]=freqs[startpos+i];
-
-        double rho = (DMAmp*DMAmp)*pow(f1yr,(-3)) * pow(freqs[startpos+i]*365.25,(-DMIndex))/(maxtspan*24*60*60);	
-        powercoeff[startpos+i]+=rho;
-        powercoeff[startpos+i+FitDMCoeff/2]+=rho;
-    }
-
-
-
-    for(int o=0;o<pulse->nobs; o++){
-        DMVec[o]=1.0/(DMKappa*pow((double)pulse->obsn[o].freqSSB,2));
-    }
-
-    for(int i=0;i<FitDMCoeff/2;i++){
-        for(int k=0;k<pulse->nobs;k++){
-            double time=(double)pulse->obsn[k].bat;
-            FMatrix[k][startpos+i]=cos(2*M_PI*freqs[startpos+i]*time)*DMVec[k];
-        }
-    }
-
-    for(int i=0;i<FitDMCoeff/2;i++){
-        for(int k=0;k<pulse->nobs;k++){
-            double time=(double)pulse->obsn[k].bat;
-            FMatrix[k][startpos+i+FitDMCoeff/2]=sin(2*M_PI*freqs[startpos+i]*time)*DMVec[k];
-        }
-    }
-
-
-
-    //////////////////////////////////////////////////////////////////////////////////////////  
-    ///////////////////////DM Events//////////////////////////////////////////////////////////
-    //////////////////////////////////////////////////////////////////////////////////////////	
-
-    startpos+=FitDMCoeff;
-
-    if(pulse->nDMEvents > 0){
-
-        for(int i =0; i < pulse->nDMEvents; i++){
-
-            double DMamp=DMEventInfo[i][2];
-            double DMindex=DMEventInfo[i][3];
-
-            double Tspan = DMEventInfo[i][1];
-            double f1yr = 1.0/3.16e7;
-            int DMEventnumCoeff=int(Tspan/averageTSamp);
-
-            for (int c=0; c<DMEventnumCoeff; c++){
-                freqs[startpos+c]=((double)(c+1))/Tspan;
-                freqs[startpos+c+DMEventnumCoeff]=freqs[startpos+c];
-
-                double rho = (DMamp*DMamp)*pow(f1yr,(-3)) * pow(freqs[startpos+c]*365.25,(-DMindex))/(maxtspan*24*60*60);
-                powercoeff[startpos+c]+=rho;
-                powercoeff[startpos+c+DMEventnumCoeff]+=rho;
-                freqdet=freqdet+2*log(powercoeff[startpos+c]);
-            }
-
-
-            for(int c=0;c<DMEventnumCoeff;c++){
-                for(int k=0;k<pulse->nobs;k++){
-                    double time=(double)pulse->obsn[k].bat;
-                    if(time < DMEventInfo[i][0]+Tspan && time > DMEventInfo[i][0]){
-                        FMatrix[k][startpos+c]=cos(2*M_PI*freqs[startpos+c]*time)*DMVec[k];
-                        FMatrix[k][startpos+c+DMEventnumCoeff]=sin(2*M_PI*freqs[startpos+c]*time)*DMVec[k];
-                    }
-                    else{
-                        FMatrix[k][startpos+c]=0;
-                        FMatrix[k][startpos+c+DMEventnumCoeff]=0;
-                    }
-                }
-            }
-
-            startpos+=2*DMEventnumCoeff;
-
-        }
-    }
-
+  
     // shapelet events
     int ShapeEventTerms=0;
     if(pulse->nTNShapeletEvents > 0){
@@ -3661,281 +3372,318 @@ void getTempoNestMaxLike(pulsar *pulse, int npsr){
         }	
 
     }
-    //printf("Total event coeffs: %i \n", ShapeEventTerms);
 
 
-    startpos += DMEventCoeff;
+
+
+    /////////////////////////////////////////////////////////////////////////////////////////////  
+    /////////////////////////Form the Design Matrix////////////////////////////////////////////
+    //////////////////////////////////////////////////////////////////////////////////////////  
+
+
+
+	int numtofit = 1;
+	int numTime=0;
+	int numJumps=0;
+	for(int i=0; i<MAX_PARAMS; i++) {
+		for(int k=0; k<pulse->param[i].aSize; k++) {
+			if(pulse->param[i].fitFlag[k]==1) {
+				if(i!=param_start && i!=param_finish) {
+				    numtofit++;
+				    numTime++;
+				}
+	   		 } // if fitFlag
+		} // for k
+	} // for i
+
+	/* Add extra parameters for jumps */
+	for(int i=1; i<=pulse->nJumps; i++) {
+		if(pulse->fitJump[i]==1){
+	   		 numtofit++;
+	    		numJumps++;
+		}
+	}
+
+
+	int totalsize=numtofit+totCoeff+ShapeEventTerms;
+	int totalnoisesize=numtofit+totCoeff;
+
+	double *TotalMatrix = new double[pulse->nobs*totalsize]();
+
+
+	double pdParamDeriv[MAX_PARAMS];
+	double *TNDMScale=new double[numtofit]();
+
+
+	for(int i=0; i < pulse->nobs; i++) {
+		FITfuncs(pulse[0].obsn[i].bat - pulse[0].param[param_pepoch].val[0], pdParamDeriv, numtofit, pulse, i,0);
+		for(int j=0; j<numtofit; j++) {
+			//if(debug == 1){printf("\n Filling design matrix: %i %i %g \n", i, j, pdParamDeriv[j]);}
+			TotalMatrix[i + j*pulse->nobs]=pdParamDeriv[j];
+			TNDMScale[j]+=TotalMatrix[i + j*pulse->nobs]*TotalMatrix[i + j*pulse->nobs];
+		} 
+	} 
+
+
+	for(int j=0; j<numtofit; j++) {
+		TNDMScale[j]=sqrt(TNDMScale[j]);
+	}
+
+
+	for(int i=0; i < pulse->nobs; i++) {
+		for(int j=0; j<numtofit; j++) {
+			TotalMatrix[i + j*pulse->nobs] = TotalMatrix[i + j*pulse->nobs]/TNDMScale[j];
+		}
+	}
+
+	if(debug == 1){printf("\n Made design matrix. \n");}
+  
+
+	int useOrthogonal=pulse->useTNOrth;	
+
+
+
+	double *V;
+	double *VT;
+	double *S;
+
+	if(useOrthogonal==1){
+
+
+
+		VT = new double[numtofit*numtofit]; 
+		S = new double[numtofit]; 
+
+
+		vector_dgesvd(TotalMatrix,pulse->nobs, numtofit);
+
+		V=new double[numtofit*numtofit];
+
+
+		for(int j=0;j < numtofit;j++){
+			for(int k=0;k < numtofit;k++){
+				V[j + k*numtofit]=VT[k + j*numtofit];
+			}
+		}
+
+	}
+
+	int startpos=numtofit;
+
 
     //////////////////////////////////////////////////////////////////////////////////////////  
-    ///////////////////////DM Band Noise//////////////////////////////////////////////////////
+    ///////////////////////Red Noise///////////////////////////////////////////////////////////
     //////////////////////////////////////////////////////////////////////////////////////////
 
-    if(pulse->TNBandDMAmp != 0 && pulse->TNBandDMGam != 0){
 
-        double BandDMAmp=pow(10.0, pulse->TNBandDMAmp);
+	double *freqs = new double[totalsize]();
 
+	double *DMVec=new double[pulse->nobs];
+	double DMKappa = 2.410*pow(10.0,-16);
+	
+	double freqdet=0;
 
+	double *powercoeff=new double[totalsize]();
 
-        double startfreq=0;
-        double stopfreq=0;
-
-        /////////////////////////////////50CM/////////////////////////////////////////////////////////////////
-
-        startfreq = 0;
-        stopfreq=1000;
-
-        for (int i=0; i<pulse->TNBandDMC; i++){
-
-            freqs[startpos+i]=((double)(i+1.0))/maxtspan;
-            freqs[startpos+i+pulse->TNBandDMC]=freqs[startpos+i];
-
-            double rho = (BandDMAmp*BandDMAmp)*pow(f1yr,(-3)) * pow(freqs[startpos+i]*365.25,(-pulse->TNBandDMGam))/(maxtspan*24*60*60);	
-            powercoeff[startpos+i]+=rho;
-            powercoeff[startpos+i+pulse->TNBandDMC]+=rho;
-        }
+	double f1yr = 1.0/3.16e7;
 
 
+	RedAmp=pow(10.0, RedAmp);
+
+	for (int i=0; i<FitRedCoeff/2; i++){
+
+		freqs[startpos+i]=RedFLow*((double)(i+1.0))/(maxtspan);
+		freqs[startpos+i+FitRedCoeff/2]=freqs[startpos+i];
+
+		double rho = pow((1+(pow((1.0/365.25)/RedCorner,RedIndex/2))),2)*(RedAmp*RedAmp/12.0/(M_PI*M_PI))/pow((1+(pow(freqs[startpos+i]/RedCorner,RedIndex/2))),2)/(maxtspan*24*60*60)*pow(f1yr,-3.0);
+		powercoeff[startpos+i]+= rho;
+		powercoeff[startpos+i+FitRedCoeff/2]+= rho;
+		//printf("T2 RedC: %i %g %g %g %g %g \n", i, rho, RedAmp, RedIndex, freqs[i], maxtspan);
+	}
 
 
-        for(int i=0;i<pulse->TNBandDMC;i++){
-            for(int k=0;k<pulse->nobs;k++){
-                if(pulse->obsn[k].freq > startfreq && pulse->obsn[k].freq < stopfreq){
-                    double time=(double)pulse->obsn[k].bat;
-                    FMatrix[k][startpos+i]=cos(2*M_PI*freqs[startpos+i]*time)*DMVec[k];
-                }
-                else{	
-                    FMatrix[k][startpos+i]=0;
-                }
-            }
-        }
+	for(int i=0;i<FitRedCoeff/2;i++){
+		for(int k=0;k<pulse->nobs;k++){
 
-        for(int i=0;i<pulse->TNBandDMC;i++){
-            for(int k=0;k<pulse->nobs;k++){
-                if(pulse->obsn[k].freq > startfreq && pulse->obsn[k].freq < stopfreq){		
-                    double time=(double)pulse->obsn[k].bat;
-                    FMatrix[k][startpos+i+pulse->TNBandDMC]=sin(2*M_PI*freqs[startpos+i]*time)*DMVec[k];
-                }
-                else{
-                    FMatrix[k][startpos+i+pulse->TNBandDMC]=0;
-                }
-            }
-        }
+			double time=(double)pulse->obsn[k].bat;
+
+			TotalMatrix[k + (i+startpos)*pulse->nobs]=cos(2*M_PI*freqs[startpos+i]*time);
+			TotalMatrix[k + (i+FitRedCoeff/2+startpos)*pulse->nobs] = sin(2*M_PI*freqs[startpos+i]*time);
+
+		}
+	}
+
+	if(debug == 1){printf("\n Filled Red. \n");}
 
 
-        startpos=startpos+2*pulse->TNBandDMC;
+    //////////////////////////////////////////////////////////////////////////////////////////  
+    ///////////////////////DM Variations//////////////////////////////////////////////////////
+    //////////////////////////////////////////////////////////////////////////////////////////
 
-        /////////////////////////////////20CM/////////////////////////////////////////////////////////////////
 
-        startfreq = 1000;
-        stopfreq=1800;
+	startpos+=FitRedCoeff;
 
-        for (int i=0; i<pulse->TNBandDMC; i++){
 
-            freqs[startpos+i]=((double)(i+1.0))/maxtspan;
-            freqs[startpos+i+pulse->TNBandDMC]=freqs[startpos+i];
+	DMAmp=pow(10.0, DMAmp);
 
-            double rho = (BandDMAmp*BandDMAmp)*pow(f1yr,(-3)) * pow(freqs[startpos+i]*365.25,(-pulse->TNBandDMGam))/(maxtspan*24*60*60);	
-            powercoeff[startpos+i]+=rho;
-            powercoeff[startpos+i+pulse->TNBandDMC]+=rho;
-        }
+	for (int i=0; i<FitDMCoeff/2; i++){
+
+		freqs[startpos+i]=((double)(i+1.0))/maxtspan;
+		freqs[startpos+i+FitDMCoeff/2]=freqs[startpos+i];
+
+		double rho = (DMAmp*DMAmp)*pow(f1yr,(-3)) * pow(freqs[startpos+i]*365.25,(-DMIndex))/(maxtspan*24*60*60);	
+		powercoeff[startpos+i]+=rho;
+		powercoeff[startpos+i+FitDMCoeff/2]+=rho;
+		//printf("rho %i %g \n", i, rho);
+	}
 
 
 
+	for(int o=0;o<pulse->nobs; o++){
+		DMVec[o]=1.0/(DMKappa*pow((double)pulse->obsn[o].freqSSB,2));
+	}
 
-        for(int i=0;i<pulse->TNBandDMC;i++){
-            for(int k=0;k<pulse->nobs;k++){
-                if(pulse->obsn[k].freq > startfreq && pulse->obsn[k].freq < stopfreq){
-                    double time=(double)pulse->obsn[k].bat;
-                    FMatrix[k][startpos+i]=cos(2*M_PI*freqs[startpos+i]*time)*DMVec[k];
-                }
-                else{	
-                    FMatrix[k][startpos+i]=0;
-                }
-            }
-        }
+	for(int i=0;i<FitDMCoeff/2;i++){
+		for(int k=0;k<pulse->nobs;k++){
+			double time=(double)pulse->obsn[k].bat;
 
-        for(int i=0;i<pulse->TNBandDMC;i++){
-            for(int k=0;k<pulse->nobs;k++){
-                if(pulse->obsn[k].freq > startfreq && pulse->obsn[k].freq < stopfreq){		
-                    double time=(double)pulse->obsn[k].bat;
-                    FMatrix[k][startpos+i+pulse->TNBandDMC]=sin(2*M_PI*freqs[startpos+i]*time)*DMVec[k];
-                }
-                else{
-                    FMatrix[k][startpos+i+pulse->TNBandDMC]=0;
-                }
-            }
-        }
+			TotalMatrix[k + (i+startpos)*pulse->nobs]=cos(2*M_PI*freqs[startpos+i]*time)*DMVec[k];
+			TotalMatrix[k + (i+FitDMCoeff/2+startpos)*pulse->nobs] = sin(2*M_PI*freqs[startpos+i]*time)*DMVec[k];
+		}
+	}
 
 
-        startpos=startpos+2*pulse->TNBandDMC;
+	startpos+=FitDMCoeff;
 
-        /////////////////////////////////10CM/////////////////////////////////////////////////////////////////
-
-
-        startfreq = 1800;
-        stopfreq=10000;
-
-        for (int i=0; i<pulse->TNBandDMC; i++){
-
-            freqs[startpos+i]=((double)(i+1.0))/maxtspan;
-            freqs[startpos+i+pulse->TNBandDMC]=freqs[startpos+i];
-
-            double rho = (BandDMAmp*BandDMAmp)*pow(f1yr,(-3)) * pow(freqs[startpos+i]*365.25,(-pulse->TNBandDMGam))/(maxtspan*24*60*60);	
-            powercoeff[startpos+i]+=rho;
-            powercoeff[startpos+i+pulse->TNBandDMC]+=rho;
-        }
-
-
-
-
-        for(int i=0;i<pulse->TNBandDMC;i++){
-            for(int k=0;k<pulse->nobs;k++){
-                if(pulse->obsn[k].freq > startfreq && pulse->obsn[k].freq < stopfreq){
-                    double time=(double)pulse->obsn[k].bat;
-                    FMatrix[k][startpos+i]=cos(2*M_PI*freqs[startpos+i]*time)*DMVec[k];
-                }
-                else{	
-                    FMatrix[k][startpos+i]=0;
-                }
-            }
-        }
-
-        for(int i=0;i<pulse->TNBandDMC;i++){
-            for(int k=0;k<pulse->nobs;k++){
-                if(pulse->obsn[k].freq > startfreq && pulse->obsn[k].freq < stopfreq){		
-                    double time=(double)pulse->obsn[k].bat;
-                    FMatrix[k][startpos+i+pulse->TNBandDMC]=sin(2*M_PI*freqs[startpos+i]*time)*DMVec[k];
-                }
-                else{
-                    FMatrix[k][startpos+i+pulse->TNBandDMC]=0;
-                }
-            }
-        }
-
-
-        startpos=startpos+2*pulse->TNBandDMC;
-    }
+	if(debug == 1){printf("\n Filled DM. \n");}
 
 
     //////////////////////////////////////////////////////////////////////////////////////////  
     ///////////////////////Band Noise//////////////////////////////////////////////////////
     //////////////////////////////////////////////////////////////////////////////////////////
 
-    int totalBandNoiseCoeff=0;
-    for(int g =0; g < pulse->nTNBandNoise; g++){
+	int totalBandNoiseCoeff=0;
+	for(int g =0; g < pulse->nTNBandNoise; g++){
 
-        double BandLF = pulse->TNBandNoiseLF[g];
-        double BandHF = pulse->TNBandNoiseHF[g];
-        double BandAmp=pow(10.0, pulse->TNBandNoiseAmp[g]);
-        double BandSpec=pulse->TNBandNoiseGam[g];
-        int BandC=pulse->TNBandNoiseC[g];
+		double BandLF = pulse->TNBandNoiseLF[g];
+		double BandHF = pulse->TNBandNoiseHF[g];
+		double BandAmp=pow(10.0, pulse->TNBandNoiseAmp[g]);
+		double BandSpec=pulse->TNBandNoiseGam[g];
+		int BandC=pulse->TNBandNoiseC[g];
 
-        totalBandNoiseCoeff+=2*BandC;
-
-
-
-        for (int i=0; i<BandC; i++){
-
-            freqs[startpos+i]=((double)(i+1.0))/maxtspan;
-            freqs[startpos+i+BandC]=freqs[startpos+i];
-
-            double rho = (BandAmp*BandAmp/12.0/(M_PI*M_PI))*pow(f1yr,(-3)) * pow(freqs[startpos+i]*365.25,(-BandSpec))/(maxtspan*24*60*60);	
-            powercoeff[startpos+i]+=rho;
-            powercoeff[startpos+i+BandC]+=rho;
-        }
+		totalBandNoiseCoeff+=2*BandC;
 
 
 
+		for (int i=0; i<BandC; i++){
 
-        for(int i=0;i<BandC;i++){
-            for(int k=0; k<pulse->nobs; k++){
-                if(pulse->obsn[k].freq > BandLF && pulse->obsn[k].freq < BandHF){
-                    double time=(double)pulse->obsn[k].bat;
-                    FMatrix[k][startpos+i]=cos(2*M_PI*freqs[startpos+i]*time);
-                    FMatrix[k][startpos+i+BandC]=sin(2*M_PI*freqs[startpos+i]*time);
+			freqs[startpos+i]=((double)(i+1.0))/maxtspan;
+			freqs[startpos+i+BandC]=freqs[startpos+i];
 
-                }
-                else{
-                    FMatrix[k][startpos+i]=0;
-                    FMatrix[k][startpos+i+BandC]=0;
-                }
-
-            }
-        }
+			double rho = (BandAmp*BandAmp/12.0/(M_PI*M_PI))*pow(f1yr,(-3)) * pow(freqs[startpos+i]*365.25,(-BandSpec))/(maxtspan*24*60*60);	
+			powercoeff[startpos+i]+=rho;
+			powercoeff[startpos+i+BandC]+=rho;
+		}
 
 
 
 
-        startpos=startpos+2*BandC;
-    }
+		for(int i=0;i<BandC;i++){
+			for(int k=0; k<pulse->nobs; k++){
+				if(pulse->obsn[k].freq > BandLF && pulse->obsn[k].freq < BandHF){
+					double time=(double)pulse->obsn[k].bat;
+
+					TotalMatrix[k + (i+startpos)*pulse->nobs]=cos(2*M_PI*freqs[startpos+i]*time);
+					TotalMatrix[k + (i+BandC+startpos)*pulse->nobs] = sin(2*M_PI*freqs[startpos+i]*time);
+
+				}
+				else{
+					TotalMatrix[k + (i+startpos)*pulse->nobs]= 0;
+					TotalMatrix[k + (i+BandC+startpos)*pulse->nobs] = 0;
+				}
+
+			}
+		}
+
+
+
+
+		startpos=startpos+2*BandC;
+	}
+
+	if(debug == 1){printf("\n Filled Band. \n");}
 
 
     //////////////////////////////////////////////////////////////////////////////////////////  
     ///////////////////////Group Noise//////////////////////////////////////////////////////
     //////////////////////////////////////////////////////////////////////////////////////////
 
-    int totalGroupCoeff=0;
-    for(int g =0; g < pulse->nTNGroupNoise; g++){
+	int totalGroupCoeff=0;
+	for(int g =0; g < pulse->nTNGroupNoise; g++){
 
-        double GroupAmp=pow(10.0, pulse->TNGroupNoiseAmp[g]);
-        double GroupSpec=pulse->TNGroupNoiseGam[g];
-        int GroupC=pulse->TNGroupNoiseC[g];
+		double GroupAmp=pow(10.0, pulse->TNGroupNoiseAmp[g]);
+		double GroupSpec=pulse->TNGroupNoiseGam[g];
+		int GroupC=pulse->TNGroupNoiseC[g];
 
-        totalGroupCoeff+=2*GroupC;
-
-
-
-        for (int i=0; i<GroupC; i++){
-
-            freqs[startpos+i]=((double)(i+1.0))/maxtspan;
-            freqs[startpos+i+GroupC]=freqs[startpos+i];
-
-            double rho = (GroupAmp*GroupAmp/12.0/(M_PI*M_PI))*pow(f1yr,(-3)) * pow(freqs[startpos+i]*365.25,(-GroupSpec))/(maxtspan*24*60*60);	
-            powercoeff[startpos+i]+=rho;
-            powercoeff[startpos+i+GroupC]+=rho;
-        }
+		totalGroupCoeff+=2*GroupC;
 
 
 
+		for (int i=0; i<GroupC; i++){
 
-        for(int i=0;i<GroupC;i++){
-            for(int k=0; k<pulse->nobs; k++){
-                int set=0;
-                for (int j=0; j < pulse->obsn[k].nFlags; j++){
+		    freqs[startpos+i]=((double)(i+1.0))/maxtspan;
+		    freqs[startpos+i+GroupC]=freqs[startpos+i];
 
-                    //Check Group Noise Flag
-
-                    if (strcmp(pulse->obsn[k].flagID[j],pulse->TNGroupNoiseFlagID[g])==0){
-                        if (strcmp(pulse->obsn[k].flagVal[j],pulse->TNGroupNoiseFlagVal[g])==0){
-                            double time=(double)pulse->obsn[k].bat;
-                            FMatrix[k][startpos+i]=cos(2*M_PI*freqs[startpos+i]*time);
-                            FMatrix[k][startpos+i+GroupC]=sin(2*M_PI*freqs[startpos+i]*time);
-                            set = 1;
-
-                        }
-                        else{
-                            if(set == 0){	
-                                FMatrix[k][startpos+i]=0;
-                                FMatrix[k][startpos+i+GroupC]=0;
-                            }
-                        }
-                    }
-                    else{
-                        if(set == 0){
-                            FMatrix[k][startpos+i]=0;
-                            FMatrix[k][startpos+i+GroupC]=0;
-                        }
-                    }	
-
-                }
-            }
-        }
+		    double rho = (GroupAmp*GroupAmp/12.0/(M_PI*M_PI))*pow(f1yr,(-3)) * pow(freqs[startpos+i]*365.25,(-GroupSpec))/(maxtspan*24*60*60);	
+		    powercoeff[startpos+i]+=rho;
+		    powercoeff[startpos+i+GroupC]+=rho;
+		}
 
 
 
 
-        startpos=startpos+2*GroupC;
-    }
+		for(int i=0;i<GroupC;i++){
+		    for(int k=0; k<pulse->nobs; k++){
+			int set=0;
+			for (int j=0; j < pulse->obsn[k].nFlags; j++){
+
+			    //Check Group Noise Flag
+
+			    if (strcmp(pulse->obsn[k].flagID[j],pulse->TNGroupNoiseFlagID[g])==0){
+				if (strcmp(pulse->obsn[k].flagVal[j],pulse->TNGroupNoiseFlagVal[g])==0){
+					double time=(double)pulse->obsn[k].bat;
+
+					TotalMatrix[k + (i+startpos)*pulse->nobs]=cos(2*M_PI*freqs[startpos+i]*time);
+					TotalMatrix[k + (i+GroupC+startpos)*pulse->nobs] = sin(2*M_PI*freqs[startpos+i]*time);
+
+					set = 1;
+
+				}
+				else{
+				    if(set == 0){	
+					TotalMatrix[k + (i+startpos)*pulse->nobs]=0;
+					TotalMatrix[k + (i+GroupC+startpos)*pulse->nobs] = 0;
+				    }
+				}
+			    }
+			    else{
+				if(set == 0){
+					TotalMatrix[k + (i+startpos)*pulse->nobs]=0;
+					TotalMatrix[k + (i+GroupC+startpos)*pulse->nobs] = 0;
+				}
+			    }	
+
+			}
+		    }
+		}
+
+
+
+
+		startpos=startpos+2*GroupC;
+	}
+
+	if(debug == 1){printf("\n Filled Group. \n");}
 
 
 
@@ -3987,13 +3735,14 @@ void getTempoNestMaxLike(pulsar *pulse, int npsr){
                             if ((double)pulse->obsn[i].bat > satmin && \
                                     (double)pulse->obsn[i].bat < satmax){
                                 Processed[i] = 1;
-                                FMatrix[i][startpos+nepoch] = 1.0;
+				
+                                TotalMatrix[i + (nepoch+startpos)*pulse->nobs] = 1.0;
                                 powercoeff[startpos+nepoch] = pow(pulse->TNECORRVal[k], \
                                         2.0)*1e-12;
                                 in++;
                             }
                             else{
-                                FMatrix[i][startpos+nepoch] = 0.0;
+                                TotalMatrix[i + (nepoch+startpos)*pulse->nobs] = 0.0;
                             }
                         }
                     }
@@ -4014,74 +3763,28 @@ void getTempoNestMaxLike(pulsar *pulse, int npsr){
     }
 
 
-    /*for (int i;i<totCoeff;i++){
-      printf("powercoeff %d: %g\n",i,powercoeff[i]);
-      }*/
+	if(debug == 1){printf("\n Filled ECORR. \n");}
 
-    // get Phi matrix
-    double **PPFM=new double*[totCoeff];
-    for(int i=0;i<totCoeff;i++){
-        PPFM[i]=new double[totCoeff];
-        for(int j=0;j<totCoeff;j++){
-            PPFM[i][j]=0;
-        }
-    }
+	for(int i=0;i<totCoeff;i++){
+		powercoeff[numtofit+i] = 1.0/powercoeff[numtofit+i];
+
+	}
 
 
-    for(int c1=0; c1<totCoeff; c1++){
-        //		printf("PPFM %i %g \n", c1, powercoeff[c1]);
-        PPFM[c1][c1]=1.0/powercoeff[c1];
-    }
+	if(debug == 1){printf("\n Filled PPFM. \n");}
+
 
     //////////////////////////////////////////////////////////////////////////////////////////  
     //////////////////////Form Total Matrix///////////////////////////////////////////////////
     //////////////////////////////////////////////////////////////////////////////////////////
 
-    int totalsize=numtofit+totCoeff+DMEventQuadTerms+ShapeEventTerms;
-    int totalnoisesize=numtofit+FitRedCoeff+FitDMCoeff+totalBandNoiseCoeff+6*pulse->TNBandDMC+totalGroupCoeff;
-
-    double **TotalMatrix=new double*[pulse->nobs];
-    for(int i =0;i<pulse->nobs;i++){
-        TotalMatrix[i]=new double[totalsize];
-        for(int j =0;j<totalsize; j++){
-            TotalMatrix[i][j]=0;
-        }
-    }
 
 
     for(int i =0;i<pulse->nobs;i++){
-        int startpoint=0;
+
         double time=((double)pulse->obsn[i].bat);
+	int startpoint = numtofit+totCoeff;
 
-        for(int j =0;j<numtofit; j++){
-            TotalMatrix[i][j]=TNDM[i][j];
-        }
-
-        startpoint+=numtofit;		
-        for(int j =0;j<totCoeff; j++){
-            TotalMatrix[i][j+startpoint]=FMatrix[i][j];
-        }
-
-        startpoint += totCoeff;
-        int DMEvterms=0;
-        for(int e =0; e < pulse->nDMEvents; e++){
-            if(time < DMEventInfo[e][0]+DMEventInfo[e][1] && time > DMEventInfo[e][0]){
-                if(pulse->TNDMEvOff[e]==1){	
-                    TotalMatrix[i][startpoint+DMEvterms]=DMVec[i];
-                    DMEvterms++;
-                }
-                if(pulse->TNDMEvLin[e]==1){	
-                    TotalMatrix[i][startpoint+DMEvterms]=(time-DMEventInfo[e][0])*DMVec[i];
-                    DMEvterms++;
-                }
-                if(pulse->TNDMEvQuad[e]==1){	
-                    TotalMatrix[i][startpoint+DMEvterms]=pow((time-DMEventInfo[e][0]),2)*DMVec[i];
-                    DMEvterms++;
-                }
-            }
-        }
-
-        startpoint += DMEventQuadTerms;
         int ShapeEvterms=0;
         for(int e =0; e < pulse->nTNShapeletEvents; e++){
 
@@ -4092,7 +3795,7 @@ void getTempoNestMaxLike(pulsar *pulse, int npsr){
             for(int s=0; s < pulse->TNShapeletEvN[e]; s++){
 
                 double NormTerm=1.0/sqrt(sqrt(2.0*M_PI)*pow(2.0,s));
-                TotalMatrix[i][startpoint+ShapeEvterms] = NormTerm*shapeVec[s]*exp(-0.5*pow((time-pulse->TNShapeletEvPos[e])/pulse->TNShapeletEvWidth[e], 2))*pow(DMVec[i], pulse->TNShapeletEvFScale[e]/2.0);
+                TotalMatrix[i + (startpoint+ShapeEvterms)*pulse->nobs] = NormTerm*shapeVec[s]*exp(-0.5*pow((time-pulse->TNShapeletEvPos[e])/pulse->TNShapeletEvWidth[e], 2))*pow(DMVec[i], pulse->TNShapeletEvFScale[e]/2.0);
 
                 ShapeEvterms++;
 
@@ -4102,71 +3805,85 @@ void getTempoNestMaxLike(pulsar *pulse, int npsr){
 
     }
 
+	if(debug == 1){printf("\n Filled TMatrix. \n");}
+
     //////////////////////////////////////////////////////////////////////////////////////////  
     //////////////////////Get Residuals Vector////////////////////////////////////////////////
     //////////////////////////////////////////////////////////////////////////////////////////
 
-    double *Resvec=new double[pulse->nobs];
-    for(int o=0;o<pulse->nobs; o++){
-        Resvec[o]=(double)pulse->obsn[o].residual;
-        pulse->obsn[o].prefitResidual = pulse->obsn[o].residual;
-    }
+	double *Resvec=new double[pulse->nobs];
+	for(int o=0;o<pulse->nobs; o++){
+		Resvec[o]=(double)pulse->obsn[o].residual;
+		pulse->obsn[o].prefitResidual = pulse->obsn[o].residual;
+	}
 
 
-
+	if(debug == 1){printf("\n Got Res. \n");}
 
     //////////////////////////////////////////////////////////////////////////////////////////  
     //////////////////////Get White Noise Vector//////////////////////////////////////////////
     //////////////////////////////////////////////////////////////////////////////////////////
 
-    double *Noise=new double[pulse->nobs];
-    for(int o=0;o<pulse->nobs; o++){
-        Noise[o]=pow(((pulse->obsn[o].toaErr)*pow(10.0,-6)),2);
-    }
+	double *Noise=new double[pulse->nobs];
+	for(int o=0;o<pulse->nobs; o++){
+		Noise[o]=pow(((pulse->obsn[o].toaErr)*pow(10.0,-6)),2);
+	}
+
+	if(debug == 1){printf("\n Got White. \n");}
 
 
     //////////////////////////////////////////////////////////////////////////////////////////  
     //////////////////////Do Algebra//////////////////////////////////////////////////////////
     //////////////////////////////////////////////////////////////////////////////////////////
 
-    double **NG = new double*[pulse->nobs]; for (int k=0; k<pulse->nobs; k++) NG[k] = new double[totalsize];
-    double **GNG = new double*[totalsize]; for (int k=0; k<totalsize; k++) GNG[k] = new double[totalsize];
+	double *NG = new double[totalsize*pulse->nobs]; 
+	double *GNG = new double[totalsize*totalsize]; 
 
 
 
-    for(int i=0;i<pulse->nobs;i++){
-        for(int j=0;j<totalsize; j++){
+	for(int i=0;i<pulse->nobs;i++){
+		for(int j=0;j<totalsize; j++){
 
-            NG[i][j]=TotalMatrix[i][j]/Noise[i];
+			NG[i + j*pulse->nobs]=TotalMatrix[i + j*pulse->nobs]/Noise[i];
+			//if(debug == 1){printf("Filling NG %i %i %g %g\n",i,j, NG[i + j*pulse->nobs], TotalMatrix[i + j*pulse->nobs] );}
 
-        }
-    }
+		}
+	}
 
-
-    dgemm(TotalMatrix, NG,GNG,pulse->nobs, totalsize,pulse->nobs, totalsize, 'T','N');
-
-
-    for(int j =0;j<totCoeff; j++){
-        GNG[numtofit+j][numtofit+j]+=PPFM[j][j];
-    }
+	if(debug == 1){printf("\n Filled NG %i %i \n",pulse->nobs, totalsize  );}
 
 
-    double tdet=0;
-    dpotrf(GNG, totalsize, tdet);
-    dpotri(GNG,totalsize);
-    //	printf("logdet GNG = %g\n",tdet);
+	vector_dgemm(TotalMatrix, NG, GNG, pulse->nobs, totalsize, pulse->nobs, totalsize, 'T','N');
 
-    double *dG=new double[totalsize];
-    dgemv(NG,Resvec,dG,pulse->nobs,totalsize,'T');
+	if(debug == 1){printf("\n Made GNG. \n");}
 
-    double *maxcoeff=new double[totalsize];
-    dgemv(GNG,dG,maxcoeff,totalsize,totalsize,'N');
 
-    longdouble *Errorvec=new longdouble[totalsize];
+	for(int j =0;j<totCoeff; j++){
+		GNG[numtofit+j + (numtofit+j)*totalsize]+=powercoeff[numtofit+j];
+	}
 
-    for(int i =0; i < totalsize; i++){
-        Errorvec[i]=pow(GNG[i][i], 0.5);
-    }
+	if(debug == 1){printf("\n Added PPFM. \n");}
+
+
+	double tdet=0;
+	vector_dpotrf(GNG, totalsize, tdet);
+	vector_dpotri(GNG,totalsize);
+
+	if(debug == 1){printf("\n Inverted GNG. \n");}
+
+
+	double *dG=new double[totalsize];
+	vector_dgemv(NG,Resvec,dG,pulse->nobs,totalsize,'T');
+
+	double *maxcoeff=new double[totalsize];
+	vector_dgemv(GNG,dG,maxcoeff,totalsize,totalsize,'N');
+
+	longdouble *Errorvec=new longdouble[totalsize];
+
+	for(int i =0; i < totalsize; i++){
+		//printf("Error vec: %i %g \n", i, pow(GNG[i][i], 0.5));
+		Errorvec[i]=pow(GNG[i + i*totalsize], 0.5);
+	}
 
 
 	double *Scoeff;
@@ -4188,19 +3905,19 @@ void getTempoNestMaxLike(pulsar *pulse, int npsr){
 		}
 	}
 
-    double *TempoCoeff = new double[numtofit];
-    double *TempoErr =  new double[numtofit];
+	double *TempoCoeff = new double[numtofit];
+	double *TempoErr =  new double[numtofit];
 
 
 	if(useOrthogonal==1){
-		dgemv(V,Scoeff,TempoCoeff,numtofit,numtofit, 'N');
+		vector_dgemv(V,Scoeff,TempoCoeff,numtofit,numtofit, 'N');
 	}
 
 	for(int i=0;i<numtofit; i++){
 		if(useOrthogonal==1){
 				long double errsum=0;
 		          	for(int j=0;j<numtofit; j++){
-					errsum += pow(V[i][j]*Serr[j],2);
+					errsum += pow(V[i + j*numtofit]*Serr[j],2);
 		               }
 				TempoCoeff[i]=TempoCoeff[i]/TNDMScale[i];
 		          	TempoErr[i]=pow(errsum,0.5)/TNDMScale[i];
@@ -4210,7 +3927,7 @@ void getTempoNestMaxLike(pulsar *pulse, int npsr){
 			TempoErr[i]=((double)Errorvec[i])/TNDMScale[i];
 		}
 	}
-    updateParameters(pulse,0,TempoCoeff,TempoErr);
+	updateParameters(pulse,0,TempoCoeff,TempoErr);
 
 
     //////////////////Get Red noise and DM Coeffs and errors/////////////////////
@@ -4228,212 +3945,192 @@ void getTempoNestMaxLike(pulsar *pulse, int npsr){
         if(j>=FitRedCoeff+numtofit && j < numtofit+FitRedCoeff+FitDMCoeff){
             //pulse->TNDMCoeffs[dmcounter] = maxcoeff[j];
             //pulse->TNDMCoeffs[dmcounter+100] = Errorvec[j];
-            //printf("DM Coeff: %i %g +/- %g \n", dmcounter, pulse->TNDMCoeffs[dmcounter], pulse->TNDMCoeffs[dmcounter+100]);
+            //printf("DM Coeff: %i %g +/- %g %g %g\n", dmcounter, maxcoeff[j], double(Errorvec[j]), maxcoeff[j] - 5*double(Errorvec[j]), maxcoeff[j] + 5*double(Errorvec[j]));
             dmcounter++;
         }
     }
 
-    double chisq=0;
-    printf("subtractRed is %i \n", pulse->TNsubtractRed);
-    printf("subtractDM is %i \n", pulse->TNsubtractDM);
+	double chisq=0;
+	printf("subtractRed is %i \n", pulse->TNsubtractRed);
+	printf("subtractDM is %i \n", pulse->TNsubtractDM);
 
-    for(int i=0;i<pulse->nobs;i++){
-        double dsum=0;
-        double redsum=0;
-        double rederr=0;
-        double dmsum=0;
-        double dmerr=0;
-        double shapesum=0;
-        double shapeerr=0;
-        for(int j=0;j<totalsize; j++){
-            //			if(i==0)printf("Max coeff: %i %g \n", j,maxcoeff[j]);		
-            dsum=dsum+TotalMatrix[i][j]*maxcoeff[j];
+	for(int i=0;i<pulse->nobs;i++){
 
-            if(j>=numtofit && j < numtofit+FitRedCoeff){
-                //if(i==20){
-                //printf("TM: %i %g %g \n", j-numtofit, TotalMatrix[i][j], maxcoeff[j]);
-                //}
-                redsum+=TotalMatrix[i][j]*maxcoeff[j];
-                rederr+=pow(TotalMatrix[i][j]*Errorvec[j],2);
-            }
-            if(j>=FitRedCoeff+numtofit && j < numtofit+FitRedCoeff+FitDMCoeff){
-                //if(i==20){
-                //printf("TM: %i %g %g \n", j-numtofit, TotalMatrix[i][j], maxcoeff[j]);
-                //}
+		double dsum=0;
+		double redsum=0;
+		double rederr=0;
+		double dmsum=0;
+		double dmerr=0;
+		double shapesum=0;
+		double shapeerr=0;
 
-                dmsum+=TotalMatrix[i][j]*maxcoeff[j];
-                dmerr+=pow(TotalMatrix[i][j]*Errorvec[j],2);
-            }
+		for(int j=0;j<totalsize; j++){
+	
+            		dsum=dsum+TotalMatrix[i + j*pulse->nobs]*maxcoeff[j];
 
-            if(j>=numtofit+FitRedCoeff+FitDMCoeff && j < totalnoisesize){
-                redsum+=TotalMatrix[i][j]*maxcoeff[j];
-                rederr+=pow(TotalMatrix[i][j]*Errorvec[j],2);
-            }		
-            if(j>=numtofit+totCoeff && j < numtofit+totCoeff+ShapeEventTerms){
-                //					printf("Shapeevent terms %i %i %g %g \n", i, j, TotalMatrix[i][j]*maxcoeff[j], pow(TotalMatrix[i][j]*Errorvec[j],2));
-                dmsum+=TotalMatrix[i][j]*maxcoeff[j];
-                dmerr+=pow(TotalMatrix[i][j]*Errorvec[j],2);
-                shapesum+=TotalMatrix[i][j]*maxcoeff[j];
-                shapeerr+=pow(TotalMatrix[i][j]*Errorvec[j],2);
-            }		
+			if(j>=numtofit && j < numtofit+FitRedCoeff){
 
+				redsum+=TotalMatrix[i + j*pulse->nobs]*maxcoeff[j];
+				rederr+=pow(TotalMatrix[i + j*pulse->nobs]*Errorvec[j],2);
 
-        }
+			}
+			if(j>=FitRedCoeff+numtofit && j < numtofit+FitRedCoeff+FitDMCoeff){
 
-        //		if(fabs(shapesum) > pow(10.0, -10)){printf("Shapeevent terms %i %.10g %g %g \n", i, (double)pulse->obsn[i].bat, shapesum/DMVec[i], sqrt(shapeerr)/DMVec[i]);}
+				dmsum+=TotalMatrix[i + j*pulse->nobs]*maxcoeff[j];
+				dmerr+=pow(TotalMatrix[i + j*pulse->nobs]*Errorvec[j],2);
+
+			}
+
+			if(j>=numtofit+FitRedCoeff+FitDMCoeff && j < totalnoisesize){
+				redsum+=TotalMatrix[i + j*pulse->nobs]*maxcoeff[j];
+				rederr+=pow(TotalMatrix[i + j*pulse->nobs]*Errorvec[j],2);
+			}	
+	
+			if(j>=numtofit+totCoeff && j < numtofit+totCoeff+ShapeEventTerms){
+
+				dmsum+=TotalMatrix[i + j*pulse->nobs]*maxcoeff[j];
+				dmerr+=pow(TotalMatrix[i + j*pulse->nobs]*Errorvec[j],2);
+
+				shapesum+=TotalMatrix[i + j*pulse->nobs]*maxcoeff[j];
+				shapeerr+=pow(TotalMatrix[i + j*pulse->nobs]*Errorvec[j],2);
+			}		
 
 
-        longdouble yrs = (pulse->obsn[i].bat - pulse->param[param_dmepoch].val[0])/365.25;
-        longdouble arg = 1.0;
-        double dmDot=0;
-        double dmDotErr=0;
-        for (int d=0;d<9;d++){
-            if(d>0){
-                arg *= yrs;
-            }
-            if (pulse->param[param_dm].paramSet[d]==1){
-                if(d>0){
-                    dmDot+=(double)(pulse->param[param_dm].val[d]*arg);
-                }
-                dmDotErr+=pow((double)(pulse->param[param_dm].err[d]*arg),2);
-            }
-        }
-
-        double pDotErr=0;
-        pDotErr+=pow(TempoErr[0],2);
-        if(pulse->param[param_f].paramSet[0]==1){
-            arg=((pulse->obsn[i].bat - pulse->param[param_pepoch].val[0])/ \
-                    pulse[0].param[param_f].val[0])*86400.0;
-            pDotErr+=pow((double)(pulse->param[param_f].err[0]*arg),2);
-
-        }
-
-        if(pulse->param[param_f].paramSet[1]==1){
-            arg=0.5*pow((double)(pulse->obsn[i].bat - pulse->param[param_pepoch].val[0]), 2);
-            longdouble argerr = (pulse->param[param_f].err[1]/ \
-                    pulse[0].param[param_f].val[0])*86400.0*86400;
-            pDotErr+=pow((double)(argerr*arg),2);
-        }
+		}
 
 
-        chisq+=(Resvec[i]-dsum)*(Resvec[i]-dsum)/(Noise[i]);
-        pulse->obsn[i].TNRedSignal=redsum;
-        pulse->obsn[i].TNRedErr=pow(rederr+pDotErr,0.5);
+		longdouble yrs = (pulse->obsn[i].bat - pulse->param[param_dmepoch].val[0])/365.25;
+		longdouble arg = 1.0;
+		double dmDot=0;
+		double dmDotErr=0;
 
-        pulse->obsn[i].TNDMSignal=dmsum;
-        pulse->obsn[i].TNDMErr=pow(dmerr/pow(DMVec[i],2) + dmDotErr,0.5);
-    }
+		for (int d=0;d<9;d++){
+		    if(d>0){
+			arg *= yrs;
+		    }
+		    if (pulse->param[param_dm].paramSet[d]==1){
+			if(d>0){
+				dmDot+=(double)(pulse->param[param_dm].val[d]*arg);	
+				dmDotErr+=pow((double)(pulse->param[param_dm].err[d]*arg),2);
+			}
+			
+		    }
+		}
+
+		double pDotErr=0;
+		pDotErr+=pow(TempoErr[0],2);
+		if(pulse->param[param_f].paramSet[0]==1){
+		    arg=((pulse->obsn[i].bat - pulse->param[param_pepoch].val[0])/ \
+			    pulse[0].param[param_f].val[0])*86400.0;
+		    pDotErr+=pow((double)(pulse->param[param_f].err[0]*arg),2);
+
+		}
+
+		if(pulse->param[param_f].paramSet[1]==1){
+		    arg=0.5*pow((double)(pulse->obsn[i].bat - pulse->param[param_pepoch].val[0]), 2);
+		    longdouble argerr = (pulse->param[param_f].err[1]/ \
+			    pulse[0].param[param_f].val[0])*86400.0*86400;
+		    pDotErr+=pow((double)(argerr*arg),2);
+		}
+
+
+		chisq+=(Resvec[i]-dsum)*(Resvec[i]-dsum)/(Noise[i]);
+		pulse->obsn[i].TNRedSignal=redsum;
+		pulse->obsn[i].TNRedErr=pow(rederr+pDotErr,0.5);
+
+		//printf("DMSig: %i %g \n", i, dmsum);
+		pulse->obsn[i].TNDMSignal=dmsum;
+		pulse->obsn[i].TNDMErr=pow(dmerr/pow(DMVec[i],2) + dmDotErr,0.5);
+	}
+
 
     //////////////////////////////////////////////////////////////////////////////////////////  
     //////////////////////Calculate GLS Chi-squared///////////////////////////////////////////
     //////////////////////////////////////////////////////////////////////////////////////////
 
-    for (int i=0; i<pulse->nobs;i++){
-        for (int j=0; j<numtofit;j++){
-            Resvec[i] -= TotalMatrix[i][j]*maxcoeff[j];
-        }
-    }
+	for (int i=0; i<pulse->nobs;i++){
+		for (int j=0; j<numtofit;j++){
+			Resvec[i] -= TotalMatrix[i + j*pulse->nobs]*maxcoeff[j];
+		}
+	}
 
-    int nother = totalsize-numtofit;
-    double **TMat = new double*[pulse->nobs];
-    for (int k=0;k<pulse->nobs;k++){
-        TMat[k] = new double[nother];
-    }
-
-    for(int i=0;i<pulse->nobs;i++){
-        for(int j=0;j<nother; j++){
-            TMat[i][j] = TotalMatrix[i][j+numtofit];
-        }
-    }
-
-    double **NT = new double*[pulse->nobs];
-    for (int k=0;k<pulse->nobs;k++){
-        NT[k] = new double[nother];
-    }
-
-    double **TNT = new double*[nother]; 
-    for (int k=0; k<nother; k++){
-        TNT[k] = new double[nother];
-    }
-
-    for(int i=0;i<pulse->nobs;i++){
-        for(int j=0;j<nother; j++){
-            NT[i][j] = TMat[i][j]/Noise[i];
-        }
-    }
-
-    dgemm(TMat, NT, TNT, pulse->nobs, nother, pulse->nobs, nother, 'T', 'N');
-
-    for(int j =0;j<totCoeff; j++){
-        TNT[j][j] += PPFM[j][j];
-    }
-
-    tdet = 0.0;
-    dpotrf(TNT, nother, tdet);
-    dpotri(TNT, nother);
-
-    double *dT = new double[nother];
-    dgemv(NT, Resvec, dT, pulse->nobs, nother, 'T');
-
-    double *Sigmad = new double[nother];
-    dgemv(TNT, dT, Sigmad, nother, nother, 'N');
-
-    chisq = 0.0;
-    double timesq=0;
-    for (int i=0; i<pulse->nobs; i++){
-        timesq+=Resvec[i]*Resvec[i]/Noise[i];
-        chisq += Resvec[i]*Resvec[i]/Noise[i];
-    }
+	int nother = totalsize-numtofit;
+	double *TMat = new double[pulse->nobs*nother]();
 
 
-    double freqsq=0;
-    for (int k=0; k<nother; k++){
-        freqsq+=dT[k]*Sigmad[k];
-        chisq -= dT[k]*Sigmad[k];
-    }
+	for(int i=0;i<pulse->nobs;i++){
+		for(int j=0;j<nother; j++){
+			TMat[i + j*pulse->nobs] = TotalMatrix[i + (j+numtofit)*pulse->nobs];
+		}
+	}
 
-    pulse->fitChisq = chisq; 
-    pulse->fitNfree = pulse->nobs-numtofit;
-    pulse->nFit=pulse->nobs;
-    pulse->nParam = numtofit;
+	double *NT = new double[pulse->nobs*nother];
+
+
+	double *TNT = new double[nother*nother]; 
+
+
+	for(int i=0;i<pulse->nobs;i++){
+		for(int j=0;j<nother; j++){
+			NT[i + j*pulse->nobs] = TMat[i + j*pulse->nobs]/Noise[i];
+		}
+	}
+
+	vector_dgemm(TMat, NT, TNT, pulse->nobs, nother, pulse->nobs, nother, 'T', 'N');
+
+	for(int j =0;j<totCoeff; j++){
+		TNT[j + j*nother] += powercoeff[numtofit+j];
+	}
+
+	tdet = 0.0;
+	vector_dpotrf(TNT, nother, tdet);
+	vector_dpotri(TNT, nother);
+
+	double *dT = new double[nother];
+	vector_dgemv(NT, Resvec, dT, pulse->nobs, nother, 'T');
+
+	double *Sigmad = new double[nother];
+	vector_dgemv(TNT, dT, Sigmad, nother, nother, 'N');
+
+	chisq = 0.0;
+	double timesq=0;
+	for (int i=0; i<pulse->nobs; i++){
+		timesq+=Resvec[i]*Resvec[i]/Noise[i];
+		chisq += Resvec[i]*Resvec[i]/Noise[i];
+	}
+
+
+	double freqsq=0;
+	for (int k=0; k<nother; k++){
+		freqsq+=dT[k]*Sigmad[k];
+		chisq -= dT[k]*Sigmad[k];
+	}
+
+	pulse->fitChisq = chisq; 
+	pulse->fitNfree = pulse->nobs-numtofit;
+	pulse->nFit=pulse->nobs;
+	pulse->nParam = numtofit;
 
 
 	if(useOrthogonal == 1){
-		for (int j = 0; j < pulse->nobs; j++){
-			delete[]U[j];
-		}
-		delete[]U;
 
 		delete[]S;
 		delete[]Scoeff;	
 		delete[]Serr;	
 
-		for (int j = 0; j < numtofit; j++){
-			delete[]VT[j];
-			delete[]V[j];
-		}
-
 		delete[]V; 
 		delete[]VT;
 	}
+
     delete[] TempoErr;
     delete[] TempoCoeff;
     delete[] DMVec;
     delete[] dT;
     delete[] Sigmad;
-    for(int i=0;i<pulse->nobs;i++){
-        delete[] TNDM[i];
-    }
-    delete[] TNDM;
-    for(int i=0; i<pulse->nobs; i++){
-        delete[] TMat[i];
-        delete[] NT[i];
-    }
+
+
     delete[] TMat;
     delete[] NT;
-    for(int i=0; i<nother; i++){
-        delete[] TNT[i];
-    }
     delete[] TNT;
 
     delete[] dG;
@@ -4442,299 +4139,151 @@ void getTempoNestMaxLike(pulsar *pulse, int npsr){
     delete[] Resvec;
     delete[] Noise;
 
-    for (int k=0; k<pulse->nobs; k++){
-        delete[] NG[k];
-    }
+
     delete[] NG;
-    for (int k=0; k<totalsize; k++){
-        delete[] GNG[k];
-    }
     delete[] GNG;
 
-    for(int i =0;i<pulse->nobs;i++){
-        delete[] TotalMatrix[i];
-    }
+
     delete[] TotalMatrix;
 
-    for(int i=0;i<totCoeff;i++){
-        delete[] PPFM[i];
-    }
-    delete[] PPFM;
+//    for(int i=0;i<totCoeff;i++){
+ //       delete[] PPFM[i];
+//    }
+//    delete[] PPFM;
 
     delete[] powercoeff;
     delete[] freqs;
-    for(int i=0;i<pulse->nobs;i++){
-        delete[] FMatrix[i];
-    }
-    delete[] FMatrix;
     delete[]Processed;
 
 }
 
 
-void dgesvd(double **A, int m, int n, double *S, double **U, double **VT)
+void vector_dgesvd(double *A, int M, int N)
 {
-    char jobu, jobvt;
-    int lda, ldu, ldvt, lwork, info;
-    double *a, *u, *vt, *work;
+
+	char jobu, jobvt;
+	int m=M, n=N ,lda=N, ldu=M, ldvt=N;
+	double *a, *s, *u, *vt;
+	int lwork, info;
+	double wkopt;
+	double *work;
+	int *iwork = new int[8*N];
+
+	vt = new double [N*N];
+	s = new double[N];
 
 
-    jobu = 'A'; /* Specifies options for computing U.
-A: all M columns of U are returned in array U;
-S: the first min(m,n) columns of U (the left
-singular vectors) are returned in the array U;
-O: the first min(m,n) columns of U (the left
-singular vectors) are overwritten on the array A;
-N: no columns of U (no left singular vectors) are
-computed. */
-
-    jobvt = 'A'; /* Specifies options for computing VT.
-A: all N rows of V**T are returned in the array
-VT;
-S: the first min(m,n) rows of V**T (the right
-singular vectors) are returned in the array VT;
-O: the first min(m,n) rows of V**T (the right
-singular vectors) are overwritten on the array A;
-N: no rows of V**T (no right singular vectors) are
-computed. */
-
-    lda = m; // The leading dimension of the matrix a.
-    a = dgesvd_ctof(A, lda, n); /* Convert the matrix A from double pointer
-                                   C form to single pointer Fortran form. */
-
-    ldu = m;
+	jobu = 'O'; /* Specifies options for computing U.
+		 A: all M columns of U are returned in array U;
+		 S: the first min(m,n) columns of U (the left
+		    singular vectors) are returned in the array U;
+		 O: the first min(m,n) columns of U (the left
+		    singular vectors) are overwritten on the array A;
+		 N: no columns of U (no left singular vectors) are
+		    computed. */
+	lwork = -1;
+	dgesdd_( "O", &m, &n, A, &ldu, s, u, &ldu, vt, &ldvt, &wkopt, &lwork, iwork, &info );
+	lwork = (int)wkopt;
+	work = (double*)malloc( lwork*sizeof(double) );
+	/* Compute SVD */
+	dgesdd_( "O", &m, &n, A, &ldu, s, u, &ldu, vt, &ldvt, work,  &lwork, iwork, &info );
 
 
-
-    ldu = m; // Left singular vector matrix
-    u = new double[ldu*ldu];
-
-    ldvt = n; // Right singular vector matrix
-    vt = new double[ldvt*n];
-
-    int LMAX=100000;
-
-    work = new double[LMAX];
-    lwork = -1; // Set up the work array, larger than needed.
-
-    // 	printf("parm 11 %i %i\n",ldu,ldvt);
-    dgesvd_(&jobu, &jobvt, &m, &n, a, &lda, S, u,&ldu, vt, &ldvt, work, &lwork, &info);
-
-    lwork = std::min(LMAX,int(work[0]));
-
-    dgesvd_(&jobu, &jobvt, &m, &n, a, &lda, S, u,&ldu, vt, &ldvt, work, &lwork, &info);
-    // 	printf("parm 11 out %i %i\n",ldu,ldvt);
-    dgesvd_ftoc(u, U, ldu, ldu);
-    dgesvd_ftoc(vt, VT, ldvt, n);
-
-    delete a;
-    delete u;
-    delete vt;
-    delete work;
+	delete vt;
+	delete s;
+	delete iwork;
+	delete work;
 }
 
 
-double* dgesvd_ctof(double **in, int rows, int cols)
+void vector_dgemv(double *A, double *vecin,double *vecout,int rowa, int cola, char AT)
 {
-    double *out;
-    int i, j;
 
-    out = new double[rows*cols];
-    for (i=0; i<rows; i++) for (j=0; j<cols; j++) out[i+j*rows] = in[i][j];
-    return(out);
+	int M,N,K;
+
+	double alpha=1;
+	double beta=0;
+	int incX=1;
+	int incY=1;
+
+	
+	dgemv_(&AT, &rowa, &cola, &alpha, A, &rowa, vecin, &incX, &beta, vecout, &incY);
+  
 }
 
-
-void dgesvd_ftoc(double *in, double **out, int rows, int cols)
-{
-    int i, j;
-
-    for (i=0; i<rows; i++) for (j=0; j<cols; j++) out[i][j] = in[i+j*rows];
-}
-
-
-void dgemv(double **A, double *vecin,double *vecout,int rowa, int cola, char AT)
+void vector_dgemm(double *A, double *B,double *C,int rowa, int cola, int rowb, int colb, char AT, char BT)
 {
 
-    double *a;
+  int M,N,K;
 
-    double alpha=1;
-    double beta=0;
-    int incX=1;
-    int incY=1;
-
-    a = dgemv_ctof(A, rowa, cola); 
-
-    dgemv_(&AT, &rowa, &cola, &alpha, a, &rowa, vecin, &incX, &beta, vecout, &incY);
-
-    delete a;
-}
+	double alpha=1;
+	double beta=0;
 
 
-double* dgemv_ctof(double **in, int rows, int cols)
-{
-    double *out;
-    int i, j;
+	if(AT == 'N'){
+		M=rowa;
+		K=cola;
+	}
+	else if(AT == 'T'){
+		M=cola;
+		K=rowa;
+	}
 
-    out = new double[rows*cols];
-    for (i=0; i<rows; i++) for (j=0; j<cols; j++) out[i+j*rows] = in[i][j];
-    return(out);
-}
-
-
-void dgemv_ftoc(double *in, double **out, int rows, int cols)
-{
-    int i, j;
-
-    for (i=0; i<rows; i++) for (j=0; j<cols; j++) out[i][j] = in[i+j*rows];
-}
-
-void dgemm(double **A, double **B,double **C,int rowa, int cola, int rowb, int colb, char AT, char BT)
-{
-
-    int M,N,K;
-    double *a, *b, *c;
-
-    double alpha=1;
-    double beta=0;
+	if(BT == 'N'){
+		N=colb;
+	}
+	else if(BT == 'T'){
+		N=rowa;
+	}	
+/*
+(TRANSA,TRANSB,M,N,K,ALPHA,A,LDA,B,LDB,BETA,C,LDC)*/
 
 
-    if(AT == 'N'){
-        M=rowa;
-        K=cola;
-    }
-    else if(AT == 'T'){
-        M=cola;
-        K=rowa;
-    }
+	
+	dgemm_(&AT, &BT, &M, &N, &K, &alpha, A, &rowa,B, &rowb, &beta, C, &M);
 
-    if(BT == 'N'){
-        N=colb;
-    }
-    else if(BT == 'T'){
-        N=rowa;
-    }	
-    /*
-       (TRANSA,TRANSB,M,N,K,ALPHA,A,LDA,B,LDB,BETA,C,LDC)*/
-
-
-    a = dgemm_ctof(A, rowa, cola); 
-    b = dgemm_ctof(B, rowb, colb);
-    c = new double[M*N];
-
-    dgemm_(&AT, &BT, &M, &N, &K, &alpha, a, &rowa,b, &rowb, &beta, c, &M);
-    dgemm_ftoc(c, C, M, N);
-
-
-    delete a;
-    delete b;
-    delete c;
 
 }
 
-
-double* dgemm_ctof(double **in, int rows, int cols)
-{
-    double *out;
-    int i, j;
-
-    out = new double[rows*cols];
-    for (i=0; i<rows; i++) for (j=0; j<cols; j++) out[i+j*rows] = in[i][j];
-    return(out);
-}
-
-
-void dgemm_ftoc(double *in, double **out, int rows, int cols)
-{
-    int i, j;
-
-    for (i=0; i<rows; i++) for (j=0; j<cols; j++) out[i][j] = in[i+j*rows];
-}
-
-void dpotri(double **A, int msize)
+void vector_dpotri(double *A, int msize)
 {
 
-    int info;
-    double *a;
-    char UPLO='L';
+	int info;
+	char UPLO='L';
 
-    a = dpotri_ctof(A, msize, msize); 
+	
+	dpotri_(&UPLO, &msize, A, &msize, &info);
 
-    dpotri_(&UPLO, &msize, a, &msize, &info);
-    dpotri_ftoc(a, A, msize, msize);
+	for(int i=0;i<msize;i++){
+		for(int j=0;j<i;j++){
+			A[j + msize*i]=A[i + msize*j];
+		}
+	}
 
-    for(int i=0;i<msize;i++){
-        for(int j=0;j<i;j++){
-            A[j][i]=A[i][j];
-        }
-    }
-
-
-    delete a;
+  
 
 }
 
-
-double* dpotri_ctof(double **in, int rows, int cols)
-{
-    double *out;
-    int i, j;
-
-    out = new double[rows*cols];
-    for (i=0; i<rows; i++) for (j=0; j<cols; j++) out[i+j*rows] = in[i][j];
-    return(out);
-}
-
-
-void dpotri_ftoc(double *in, double **out, int rows, int cols)
-{
-    int i, j;
-
-    for (i=0; i<rows; i++) for (j=0; j<cols; j++) out[i][j] = in[i+j*rows];
-}
-
-void dpotrf(double **A, int msize, double &det)
+void vector_dpotrf(double *A, int msize, double &det)
 {
 
-    int info;
-    double *a;
-    char UPLO='L';
+	int info;
+	char UPLO='L';
 
-    a = dpotrf_ctof(A, msize, msize); 
+	
+	dpotrf_(&UPLO, &msize, A, &msize, &info);
 
-    dpotrf_(&UPLO, &msize, a, &msize, &info);
-    dpotrf_ftoc(a, A, msize, msize);
+	det=0;
+	for(int i=0;i<msize;i++){
+		det+=log(A[i + i*msize]);
+	}
 
-    det=0;
-    for(int i=0;i<msize;i++){
-        det+=log(A[i][i]);
-    }
+	det=det*2;
 
-    det=det*2;
-
-    //printf("info: %i \n", info);
-    delete a;
+  	//printf("info: %i \n", info);
 
 }
 
-
-double* dpotrf_ctof(double **in, int rows, int cols)
-{
-    double *out;
-    int i, j;
-
-    out = new double[rows*cols];
-    for (i=0; i<rows; i++) for (j=0; j<cols; j++) out[i+j*rows] = in[i][j];
-    return(out);
-}
-
-
-void dpotrf_ftoc(double *in, double **out, int rows, int cols)
-{
-    int i, j;
-
-    for (i=0; i<rows; i++) for (j=0; j<cols; j++) out[i][j] = in[i+j*rows];
-}
 
 #endif
 #endif

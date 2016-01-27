@@ -1,7 +1,8 @@
 #include <stdio.h>
 #include <vector>
 #include <string.h>
-#include "/usr/include/gsl/gsl_sf_gamma.h"
+//#include "/usr/include/gsl/gsl_sf_gamma.h"
+#include "gsl/gsl_sf_gamma.h"
 #include <gsl/gsl_multimin.h>
 #include "dgemm.h"
 #include "dgemv.h"
