@@ -108,6 +108,7 @@ temponest: all
 	$(MAKE) -C temponest
 
 temponest-install: temponest
+	$(MAKE) -C temponest install
 	$(MAKE) -C temponest temponest-install
 
 temponest-clean:

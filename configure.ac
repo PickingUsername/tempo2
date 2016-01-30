@@ -204,7 +204,8 @@ AC_CONFIG_FILES([Makefile plugin/Makefile sofa/Makefile
                  unsupported_plugins/ppta/Makefile
                  unsupported_plugins/glast/Makefile
                  tests/Makefile
-                 temponest/Makefile])
+                 temponest/Makefile
+                 temponest/plugin/Makefile])
 
 AC_OUTPUT
 
